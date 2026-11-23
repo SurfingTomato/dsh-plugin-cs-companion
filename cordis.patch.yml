@@ -1,0 +1,12 @@
+- insert:
+    - id: cs-companion
+      name: dsh-plugin-cs-companion
+      config:
+        contact: 'you@example.com'
+        groups:
+          watchparty: true
+          alert: true
+          bet: true
+          schedule: true
+          player: true
+          review: true
