@@ -150,7 +150,11 @@ export function registerSchedule(ctx: Context, runtime: CsRuntime): void {
     name: 'cs_schedule',
     description:
       '未来赛程，按天分组。含整届赛事的预排与后续轮次的 TBD 占位。'
-      + '用户问"后面还有什么比赛""明天打什么""这个赛事还有几轮"时调用。',
+      + '用户问"后面还有什么比赛""明天打什么""这个赛事还有几轮"时调用。'
+      + '返回的标题写了"已确定对阵 N 场"：这 N 场必须一场不漏地列全（几点、谁打谁），'
+      + '不能只挑一两场就总结成"就这几场"。'
+      + '赛程是实时数据，随时会补队名、改时间：即使用户重复问、即使你记得刚查过，也必须重新调用，'
+      + '不许凭旧回答复述。用户再问一次通常意味着上次答得不对。',
     parameters: {
       days: { type: 'integer', description: '看几天内的，默认 3 天，最多 14 天' },
       event: { type: 'string', description: '只看某个赛事，填赛事名关键词' },
@@ -175,22 +179,41 @@ export function registerSchedule(ctx: Context, runtime: CsRuntime): void {
 
       if (pool.length === 0) return { text: `${span} 天内没有已排定的比赛（接口没返回）。直接说没有，别编赛程。` }
 
-      const lines: string[] = [`【未来 ${span} 天 ${pool.length} 场】`]
-      let currentDay = ''
+      // 已定对阵和 TBD 占位分开：占位几十场会把真实对阵淹掉，模型容易只挑一两场讲
+      const isTbd = (m: CsMatch) => m.t1 === 'TBD' || m.t2 === 'TBD' || !m.t1 || !m.t2
+      const decidedCount = pool.filter(m => !isTbd(m)).length
+
+      interface DayBucket { decided: CsMatch[]; tbd: number }
+      const byDay = new Map<string, DayBucket>()
       for (const match of pool) {
         const day = formatDay(match.planTs)
-        if (day !== currentDay) {
-          currentDay = day
-          lines.push(`\n—— ${day} ——`)
-        }
-        const teams = match.t1 === 'TBD' && match.t2 === 'TBD'
-          ? '对阵待定'
-          : `${match.t1} vs ${match.t2}`
-        lines.push(`${formatTs(match.planTs)} ${teams}　${boLabel(match.bo)}　${untilText(match.planTs)}`)
-        if (match.stage || match.event) lines.push(`   ${[match.event, match.stage].filter(Boolean).join(' · ')}`)
+        const bucket = byDay.get(day) ?? { decided: [], tbd: 0 }
+        if (isTbd(match)) bucket.tbd += 1
+        else bucket.decided.push(match)
+        byDay.set(day, bucket)
       }
-      lines.push('\n（TBD 是官方还没定下的对阵，不是没查到。）')
-      return { text: lines.join('\n'), data: { count: pool.length } }
+
+      const lines: string[] = [`【未来 ${span} 天】共 ${pool.length} 场，其中已确定对阵 ${decidedCount} 场`]
+      for (const day of [...byDay.keys()].sort()) {
+        const bucket = byDay.get(day)
+        if (!bucket) continue
+        lines.push(`\n—— ${day} ——`)
+        for (const match of bucket.decided) {
+          lines.push(`${formatTs(match.planTs)} ${match.t1} vs ${match.t2}　${boLabel(match.bo)}　${untilText(match.planTs)}`)
+          if (match.stage || match.event) lines.push(`   ${[match.event, match.stage].filter(Boolean).join(' · ')}`)
+        }
+        if (bucket.tbd > 0) lines.push(`另有 ${bucket.tbd} 场对阵未定（TBD，等上一轮打完才填队名）`)
+      }
+
+      if (decidedCount > 0) {
+        lines.push(
+          `\n（上面 ${decidedCount} 场都是已经排好队名的真实对阵，讲的时候必须一场不漏地列全，`
+          + '别只说开头一两场就下"只有几场"的结论；只有 TBD 那些才算未定。）',
+        )
+      } else {
+        lines.push('\n（TBD 是官方还没定下的对阵，不是没查到。）')
+      }
+      return { text: lines.join('\n'), data: { count: pool.length, decided: decidedCount } }
     },
   }))
 
